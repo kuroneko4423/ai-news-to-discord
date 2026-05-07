@@ -1,0 +1,181 @@
+name: Post AI News to Discord
+
+# ===========================================================
+# 実行トリガー
+#   - schedule: 毎日 00:00 UTC = 09:00 JST に実行
+#   - workflow_dispatch: GitHub UI から手動実行
+# ===========================================================
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write  # claude-code-action@v1 が GitHub App OIDC で必要
+
+jobs:
+  # ===========================================================
+  # Job 1: ニュース取得
+  #   複数RSSから取得し news.json をアーティファクト化
+  # ===========================================================
+  fetch-news:
+    name: Fetch AI news from RSS feeds
+    runs-on: ubuntu-latest
+    outputs:
+      has_news: ${{ steps.check.outputs.has_news }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests feedparser
+
+      - name: Fetch news
+        env:
+          NEWS_OUTPUT_PATH: news.json
+          PER_FEED_LIMIT: "3"
+          TOTAL_LIMIT: "15"
+        run: python news_fetcher.py
+
+      - name: Check news count
+        id: check
+        run: |
+          COUNT=$(python -c "import json; print(json.load(open('news.json'))['count'])")
+          echo "Fetched $COUNT news items"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_news=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_news=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload news artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-json
+          path: news.json
+          retention-days: 7
+
+  # ===========================================================
+  # Job 2: 要約 (Claude Code GitHub Actions)
+  #   news.json を読んで summary.md を生成させる
+  # ===========================================================
+  summarize:
+    name: Summarize news with Claude Code Action
+    runs-on: ubuntu-latest
+    needs: fetch-news
+    if: needs.fetch-news.outputs.has_news == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download news artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: news-json
+          path: .
+
+      - name: Prepare today's date (JST)
+        id: date
+        run: echo "today=$(TZ=Asia/Tokyo date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # ---- Claude Code Action による要約 ----
+      # prompt 入力に「news.json を読み summary.md を作成せよ」と依頼。
+      # Read/Write/Bash ツールを許可することで、Claude が
+      # ワーキングディレクトリのファイルを操作できるようにする。
+      - name: Generate summary with Claude Code Action
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --allowedTools Read,Write,Bash
+            --max-turns 10
+          prompt: |
+            あなたはAIニュースを日本のビジネス読者向けに要約する編集者です。
+
+            このリポジトリのワーキングディレクトリには `news.json` というファイルがあります。
+            これは複数のRSSフィードから取得した直近のAI関連ニュース一覧です。
+            JSONには `count`(件数)、`categories`(カテゴリ別グルーピング)、
+            `items`(個別記事配列) が含まれます。
+
+            # あなたのタスク
+            1. `news.json` を Read ツールで読み込む
+            2. 内容を理解し、Discord投稿用の日本語Markdownを作成する
+            3. 結果を `summary.md` に Write ツールで保存する
+            4. 完了したら何件要約したか報告する
+
+            # summary.md のフォーマット
+            - 1行目: `📅 ${{ steps.date.outputs.today }} のAIニュース (N件)` (Nは実際の件数)
+            - 空行
+            - カテゴリごとに `## general` / `## research` / `## vendor` の見出し
+              (該当カテゴリがあるものだけ出力)
+            - 各記事:
+              - `**[タイトル](URL)** — 出典 / 地域(jp|global)`
+              - 改行して日本語で1〜2文の要約
+              - 空行
+            - 全体で2000〜3500文字程度を目安にする
+            - 絵文字は控えめに、リンクは必ず保持
+
+            # 注意
+            - 元記事のタイトル・URLを改変しない
+            - JSONに無い情報を創作しない
+            - `summary.md` への書き込みが完了するまでタスクを終了しない
+
+      - name: Verify summary was generated
+        run: |
+          if [ ! -f summary.md ] || [ ! -s summary.md ]; then
+            echo "❌ summary.md was not generated or is empty"
+            exit 1
+          fi
+          echo "✅ summary.md generated ($(wc -c < summary.md) bytes)"
+          echo "--- Preview (first 30 lines) ---"
+          head -n 30 summary.md
+
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-md
+          path: summary.md
+          retention-days: 7
+
+  # ===========================================================
+  # Job 3: Discord 投稿
+  # ===========================================================
+  notify-discord:
+    name: Post summary to Discord
+    runs-on: ubuntu-latest
+    needs: summarize
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Download summary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: summary-md
+          path: .
+
+      - name: Send to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SUMMARY_PATH: summary.md
+        run: python discord_notifier.py

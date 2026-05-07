@@ -1,0 +1,7 @@
+# --- Core ---
+requests>=2.31.0
+feedparser>=6.0.11
+python-dotenv>=1.0.0
+
+# --- ローカル動作確認用(本番GitHub ActionsではClaude Code Actionが要約を担うため不要) ---
+anthropic>=0.40.0
