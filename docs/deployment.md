@@ -35,11 +35,29 @@ git push -u origin main
 4. 名前・アイコン・投稿先チャンネルを設定
 5. 「ウェブフックURLをコピー」してメモする
 
-### 2.3 Anthropic API キーの取得
+### 2.3 Claude Code OAuth トークンの取得
 
-1. [Anthropic Console](https://console.anthropic.com/) にログイン
-2. 「API Keys」メニューから「Create Key」
-3. キーを作成してコピー（一度しか表示されない）
+本プロジェクトは Claude Pro / Max プランの**サブスクリプション利用枠**で動作します。APIキーではなく OAuth トークンを使うため、ローカルマシンで以下を実行してトークンを発行してください。
+
+```bash
+# 1. Claude Code を最新版にインストール / 更新
+npm install -g @anthropic-ai/claude-code
+
+# 2. Pro / Max プランのアカウントでログイン (まだの場合)
+claude /login
+# → ブラウザで Claude.ai にログイン → 認可
+
+# 3. 1年間有効な OAuth トークンを発行
+claude setup-token
+# → ターミナルにトークンが表示される (sk-ant-oat01-... で始まる文字列)
+```
+
+**重要**:
+- 表示されたトークンは1度しか出力されないので、すぐにコピーしてください
+- このコマンド自体はトークンをローカルに保存しません
+- 環境変数 `ANTHROPIC_API_KEY` がOSに設定されていると優先されてしまうため、サブスク認証を使う場合は `unset ANTHROPIC_API_KEY` で外しておくこと
+
+> **個人利用前提**: Anthropicの利用規約上、Pro / Max プランの OAuth 認証は「個人による通常利用」が想定されています。本プロジェクトの想定利用ケース(自分専用のDiscordチャンネルへの投稿)はこの範囲内です。複数人が利用するチャンネルへ拡張する場合は、APIキー方式 (`ANTHROPIC_API_KEY`) または Team / Enterprise プランへの移行を検討してください。
 
 ### 2.4 GitHub Secrets の設定
 
@@ -47,8 +65,8 @@ git push -u origin main
 
 | Secret 名 | 値 |
 |---|---|
-| `ANTHROPIC_API_KEY` | `sk-ant-...` (上記で取得) |
-| `DISCORD_WEBHOOK_URL` | `https://discord.com/api/webhooks/...` (上記で取得) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `sk-ant-oat01-...` (2.3 で取得したトークン) |
+| `DISCORD_WEBHOOK_URL` | `https://discord.com/api/webhooks/...` (2.2 で取得したURL) |
 
 ### 2.5 動作確認（手動実行）
 
@@ -74,11 +92,13 @@ pip install -r requirements.txt
 cp .env.example .env
 # .env を編集
 #   DISCORD_WEBHOOK_URL=...
-#   ANTHROPIC_API_KEY=...
+#   ANTHROPIC_API_KEY=...   ← ローカル実行時のみ必要(Anthropic SDK 直接呼び出しのため)
 
 # 全フロー実行
 python main.py
 ```
+
+> **ローカルでの認証について**: `claude-code-action` は GitHub Actions ランナー専用のため、ローカル実行時は Anthropic Python SDK で代替します。SDK は OAuth トークンではなく APIキー (`sk-ant-api03-...`) を要求するため、ローカル動作確認時のみ Anthropic Console で APIキーを発行してください。本番(GitHub Actions)では引き続き OAuth トークンが使われます。
 
 個別モジュールの単体テスト:
 
@@ -120,9 +140,10 @@ python discord_notifier.py
 ### 5.3 `summarize` ジョブが失敗
 | 症状 | 原因 / 対処 |
 |---|---|
-| `anthropic_api_key is required` | Secret `ANTHROPIC_API_KEY` 未登録 |
-| `401 Unauthorized` | API キーが失効/無効 → 再発行 |
-| `insufficient credits` | Anthropic アカウントの残高不足 |
+| `claude_code_oauth_token is required` | Secret `CLAUDE_CODE_OAUTH_TOKEN` 未登録 |
+| `401 Unauthorized` | OAuthトークンが期限切れ(1年)または失効 → ローカルで `claude setup-token` を再実行してSecret更新 |
+| `Subscription required` | Pro / Max プランが解約されている、または支払い問題 |
+| `usage limit exceeded` | サブスクの利用枠を使い切り → 翌月のリセット待ちか、APIキー方式に一時切替 |
 | `summary.md was not generated or is empty` | プロンプトの調整(Write指示が伝わっていない可能性)、または `claude_args` の `--allowedTools` から `Write` が抜けていないか確認 |
 
 ### 5.4 `notify-discord` ジョブが失敗
@@ -144,12 +165,26 @@ python discord_notifier.py
 | 項目 | 概算 |
 |---|---|
 | GitHub Actions 利用時間 | 約3〜4分/日（無料枠2,000分/月で十分カバー） |
-| Anthropic API（Claude Sonnet） | 入力 ~5,000 token + 出力 ~2,500 token = 月額数百円〜千円程度 |
+| Claude 利用枠 | **既存の Pro / Max サブスクの利用枠から消費** (1日1回・短いプロンプトなので利用枠への影響は軽微) |
 | Discord Webhook | 無料 |
 
-## 7. アンインストール
+> サブスクリプション利用枠で動作するため、**追加課金は発生しません**。利用枠に余裕がない月は APIキー方式 (`ANTHROPIC_API_KEY`) に一時切替する選択肢もあります。
+
+## 7. トークンのローテーション
+
+OAuthトークンの有効期限は **1年間** です。失効するとジョブが突然失敗するため、定期的なローテーションを推奨します。
+
+| 推奨 | 内容 |
+|---|---|
+| カレンダー登録 | トークン発行から11ヶ月後に再発行リマインダ |
+| 再発行手順 | ローカルで `claude setup-token` を再実行 → 新トークンをSecret `CLAUDE_CODE_OAUTH_TOKEN` で上書き |
+| サブスク解約時 | トークンも同時に無効化される(切替忘れに注意) |
+
+## 8. アンインストール
 
 1. GitHub Actions の Settings からワークフローを無効化、またはファイル削除
 2. Discord 側で Webhook を削除
-3. Anthropic Console で該当 API キーを失効
+3. リポジトリのSecrets `CLAUDE_CODE_OAUTH_TOKEN` を削除
 4. （リポジトリも不要であれば）リポジトリを削除
+
+> OAuthトークン自体は Anthropic 側で個別失効する手段が用意されていません。アカウント側で `/logout` するか、サブスクを解約することで失効します。

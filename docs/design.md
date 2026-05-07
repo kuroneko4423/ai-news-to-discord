@@ -140,8 +140,10 @@ RSS Feeds (7 sources)
 
 | Secret | 用途 |
 |---|---|
-| `ANTHROPIC_API_KEY` | `claude-code-action@v1` の認証 |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `claude-code-action@v1` のサブスクリプション認証 (Pro/Max利用枠) |
 | `DISCORD_WEBHOOK_URL` | `notify-discord` ジョブの投稿先 |
+
+> 本プロジェクトは個人利用前提のため OAuth トークンによるサブスク認証を採用。複数人配信に拡張する場合は `ANTHROPIC_API_KEY` (APIキー従量課金) または Team / Enterprise プランへ切り替える。
 
 ## 8. 拡張ポイント
 

@@ -94,7 +94,12 @@ jobs:
       - name: Generate summary with Claude Code Action
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # サブスクリプション認証 (Claude Pro/Max プランの利用枠を消費)
+          # ローカルで `claude setup-token` を実行して取得したOAuthトークンを
+          # CLAUDE_CODE_OAUTH_TOKEN というSecret名で登録しておくこと。
+          # APIキー従量課金にしたい場合は、代わりに以下の行を使う:
+          #   anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools Read,Write,Bash
             --max-turns 10

@@ -13,11 +13,11 @@
 | ジョブ | 主言語 | 主入力 | 主出力 | Secrets |
 |---|---|---|---|---|
 | `fetch-news` | Python | RSS URL一覧 (定数) | `news.json` (artifact) | なし |
-| `summarize` | (Claude Code Action) | `news.json` | `summary.md` (artifact) | `ANTHROPIC_API_KEY` |
+| `summarize` | (Claude Code Action) | `news.json` | `summary.md` (artifact) | `CLAUDE_CODE_OAUTH_TOKEN` |
 | `notify-discord` | Python | `summary.md` | Discord メッセージ | `DISCORD_WEBHOOK_URL` |
 
 ### 1.3 なぜ Claude Code Action か
-- LangChain依存とPython側のLLM呼び出しコードを撤廃でき、要約ロジックがプロンプトに集約される
+- 要約ロジックがプロンプトに集約され、Pythonコード側にLLM呼び出しを持たなくて済む
 - 要約品質改善のためのイテレーションがワークフローYAML編集だけで可能
 - ファイル操作ツール (`Read`/`Write`) を許可することで、Claudeが直接ファイル成果物を生成できる
 - `--max-turns` で実行時間とコストの上限を明示できる
@@ -73,7 +73,8 @@
 ## 5. セキュリティ設計
 
 ### 5.1 認証情報
-- `ANTHROPIC_API_KEY` / `DISCORD_WEBHOOK_URL` は **GitHub リポジトリ Secrets** で管理
+- `CLAUDE_CODE_OAUTH_TOKEN` / `DISCORD_WEBHOOK_URL` は **GitHub リポジトリ Secrets** で管理
+- Claude Code Action はサブスクリプション認証(Pro/Max利用枠)で動作。`claude setup-token` で発行する1年有効のOAuthトークンを利用
 - ローカル実行時は `.env` を使用し、`.gitignore` でコミット防止
 - ログにSecretsが出力されないよう、Pythonコードでは値を直接 `print` しない
 

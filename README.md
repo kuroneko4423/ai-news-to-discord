@@ -16,16 +16,6 @@
 
 各ジョブは GitHub Actions の **アーティファクト** で受け渡しを行うため疎結合です。
 
-## 主な変更点（旧バージョンから）
-
-| 項目 | 旧構成 | 新構成 |
-|---|---|---|
-| ソース管理 | GitLab | **GitHub** |
-| CI/CD | GitLab CI (`.gitlab-ci.yml`) | **GitHub Actions** (`.github/workflows/post-news.yml`) |
-| ニュース取得元 | ITmedia AI+ RSS のみ + DuckDuckGo検索 | **国内外7フィード** をカテゴリ分類 |
-| 要約 | Gemini API + LangChain (Pythonコード内) | **Claude Code GitHub Actions** (`anthropics/claude-code-action@v1`) |
-| 投稿先 | Microsoft Teams (Adaptive Card) | **Discord** (Webhook) |
-
 ## 技術スタック
 
 - **Python 3.11**
@@ -78,12 +68,25 @@
 
 | Secret 名 | 用途 |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude Code Action による要約生成用 |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code Action による要約生成用 (サブスク認証) |
 | `DISCORD_WEBHOOK_URL` | Discord 投稿先 Webhook URL |
 
-#### Anthropic API Key の取得
-1. [Anthropic Console](https://console.anthropic.com/) にログイン
-2. 「API Keys」から新しいキーを発行
+#### Claude Code OAuth Token の取得
+Claude Pro / Max プランのサブスクリプション利用枠で動かすため、APIキーではなくOAuthトークンを使います。
+
+```bash
+# Claude Code を最新版にインストール / 更新
+npm install -g @anthropic-ai/claude-code
+
+# Pro / Max アカウントでログイン (まだの場合)
+claude /login
+
+# 1年間有効な OAuth トークンを発行
+claude setup-token
+# → ターミナルにトークンが表示される (1度しか表示されないのですぐコピー)
+```
+
+> **個人利用前提**: このプロジェクトのOAuthトークン運用は「投稿先のDiscordチャンネルを自分1人だけが見る」前提です。複数人が利用するチャンネルへ配信する場合はAnthropicの利用規約上 APIキー方式 (`ANTHROPIC_API_KEY`) または Team / Enterprise プランへの移行が必要です。
 
 #### Discord Webhook URL の取得
 1. 投稿先のDiscordチャンネルを開く
@@ -130,7 +133,7 @@ python main.py
 
 ### Job 2: `summarize`
 - `news-json` アーティファクトをダウンロード
-- `anthropics/claude-code-action@v1` を起動
+- `anthropics/claude-code-action@v1` を起動 (**サブスクリプション認証**)
 - `prompt` 入力でClaudeに「news.jsonを読んで、指定フォーマットでsummary.mdを書け」と指示
 - `Read,Write,Bash` ツールを許可することでファイル操作を可能にする
 - 生成された `summary.md` を `summary-md` アーティファクトとしてアップロード
@@ -183,7 +186,7 @@ on:
 | 症状 | 原因 / 対処 |
 |---|---|
 | `fetch-news` で取得0件 | 各RSSフィードがリーチャブルか確認。Actions ログのフィード別取得数を確認 |
-| `summarize` が失敗 | `ANTHROPIC_API_KEY` のSecret登録漏れ、APIキーの有効性、APIクレジット残高 |
+| `summarize` が失敗 | `CLAUDE_CODE_OAUTH_TOKEN` のSecret登録漏れ、トークン期限切れ(1年)、サブスク利用枠超過 |
 | `summary.md` が生成されない | プロンプトの「Write ツールで保存」指示が効いているか、`claude_args` で `Write` 許可が抜けていないか |
 | `notify-discord` で 401/404 | `DISCORD_WEBHOOK_URL` が誤り / Webhook削除済み |
 | Discord で文字化け | 日本語が UTF-8 で送られていることを確認(本実装では `requests.post(json=...)` で自動対応) |
