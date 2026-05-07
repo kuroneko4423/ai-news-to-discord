@@ -2,12 +2,12 @@ name: Post AI News to Discord
 
 # ===========================================================
 # 実行トリガー
-#   - schedule: 毎日 00:00 UTC = 09:00 JST に実行
+#   - schedule: 毎日 23:30 UTC = 翌日 08:30 JST に実行
 #   - workflow_dispatch: GitHub UI から手動実行
 # ===========================================================
 on:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "30 23 * * *"
   workflow_dispatch:
 
 permissions:
