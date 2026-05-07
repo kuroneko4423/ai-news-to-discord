@@ -66,7 +66,8 @@ jobs:
 
   # ===========================================================
   # Job 2: 要約 (Claude Code GitHub Actions)
-  #   news.json を読んで summary.md を生成させる
+  #   news.json を読んで summary.json を生成させる
+  #   summary.json は Discord Embed 投稿用の構造化データ
   # ===========================================================
   summarize:
     name: Summarize news with Claude Code Action
@@ -88,7 +89,7 @@ jobs:
         run: echo "today=$(TZ=Asia/Tokyo date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       # ---- Claude Code Action による要約 ----
-      # prompt 入力に「news.json を読み summary.md を作成せよ」と依頼。
+      # prompt 入力に「news.json を読み summary.json を作成せよ」と依頼。
       # Read/Write/Bash ツールを許可することで、Claude が
       # ワーキングディレクトリのファイルを操作できるようにする。
       - name: Generate summary with Claude Code Action
@@ -113,42 +114,49 @@ jobs:
 
             # あなたのタスク
             1. `news.json` を Read ツールで読み込む
-            2. 内容を理解し、Discord投稿用の日本語Markdownを作成する
-            3. 結果を `summary.md` に Write ツールで保存する
+            2. 各記事に対して日本語1〜2文の要約を作成する
+            3. 結果を `summary.json` に Write ツールで保存する (Discord Embed投稿用の構造化データ)
             4. 完了したら何件要約したか報告する
 
-            # summary.md のフォーマット
-            - 1行目: `📅 ${{ steps.date.outputs.today }} のAIニュース (N件)` (Nは実際の件数)
-            - 空行
-            - カテゴリごとに `## general` / `## research` / `## vendor` の見出し
-              (該当カテゴリがあるものだけ出力)
-            - 各記事:
-              - `**[タイトル](URL)** — 出典 / 地域(jp|global)`
-              - 改行して日本語で1〜2文の要約
-              - 空行
-            - 全体で2000〜3500文字程度を目安にする
-            - 絵文字は控えめに、リンクは必ず保持
+            # summary.json のスキーマ (厳守)
+            ```json
+            {
+              "date": "${{ steps.date.outputs.today }}",
+              "count": <実際の件数(整数)>,
+              "items": [
+                {
+                  "category": "general" | "research" | "vendor",
+                  "title": "<元記事のタイトルそのまま>",
+                  "url": "<元記事のURLそのまま>",
+                  "source": "<出典名 (例: ITmedia AI+)>",
+                  "region": "jp" | "global",
+                  "summary": "<日本語1〜2文の要約>"
+                }
+              ]
+            }
+            ```
 
             # 注意
-            - 元記事のタイトル・URLを改変しない
-            - JSONに無い情報を創作しない
-            - `summary.md` への書き込みが完了するまでタスクを終了しない
+            - 出力は**純粋なJSONファイル**にすること (Markdownのコードブロックや前置き・後書きは付けない)
+            - `title` / `url` / `source` / `region` / `category` は `news.json` の値を改変せずそのまま使う
+            - `news.json` に無い情報を創作しない
+            - 各 `summary` は1〜2文・日本語・150文字以内を目安
+            - `items` の並び順は `news.json` の順序に従う
+            - `summary.json` への書き込みが完了するまでタスクを終了しない
 
       - name: Verify summary was generated
         run: |
-          if [ ! -f summary.md ] || [ ! -s summary.md ]; then
-            echo "❌ summary.md was not generated or is empty"
+          if [ ! -f summary.json ] || [ ! -s summary.json ]; then
+            echo "❌ summary.json was not generated or is empty"
             exit 1
           fi
-          echo "✅ summary.md generated ($(wc -c < summary.md) bytes)"
-          echo "--- Preview (first 30 lines) ---"
-          head -n 30 summary.md
+          python -c "import json; d=json.load(open('summary.json',encoding='utf-8')); items=d.get('items'); assert isinstance(items, list) and items, 'items missing or empty'; print(f'✅ summary.json OK ({len(items)} items)')"
 
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: summary-md
-          path: summary.md
+          name: summary-json
+          path: summary.json
           retention-days: 7
 
   # ===========================================================
@@ -176,11 +184,11 @@ jobs:
       - name: Download summary artifact
         uses: actions/download-artifact@v4
         with:
-          name: summary-md
+          name: summary-json
           path: .
 
       - name: Send to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          SUMMARY_PATH: summary.md
+          SUMMARY_PATH: summary.json
         run: python discord_notifier.py

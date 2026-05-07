@@ -4,14 +4,16 @@
 
 本番(GitHub Actions)では以下の3ジョブで実行されます:
   1. fetch-news    : news_fetcher.py が news.json を生成
-  2. summarize     : claude-code-action@v1 が news.json を読んで summary.md を生成
-  3. notify-discord: discord_notifier.py が summary.md を Discord に投稿
+  2. summarize     : claude-code-action@v1 が news.json を読んで summary.json を生成
+  3. notify-discord: discord_notifier.py が summary.json を Discord に Embed 投稿
 
 ローカルでも全フローを通したいケース(動作確認用)のため、
 要約ステップは Anthropic API を直接呼ぶ簡易実装でフォールバックします。
-要約のプロンプトは .github/workflows/post-news.yml と揃えてあります。
+出力スキーマは .github/workflows/post-news.yml と揃えてあります。
 """
+import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,23 +30,47 @@ SUMMARY_PROMPT_TEMPLATE = """\
 
 {news_json}
 
-このJSONを読み、Discordチャンネルへの投稿用Markdownを作成してください。
+このJSONを読み、Discord Embed投稿用の構造化要約データを作成してください。
 
-# 出力フォーマット
-- 冒頭に1行で「📅 {today} のAIニュース ({count}件)」と書く
-- カテゴリごと(general / research / vendor)にセクションを分ける
-  - セクション見出しは ## general / ## research / ## vendor (該当があるもののみ)
-- 各記事は次のフォーマット:
-  - **[タイトル](URL)** — 出典 / 地域(jp|global)
-  - 日本語で1〜2文の要約
-- 全体で2000文字程度を目安にする(超えても可)
-- 絵文字は控えめに、リンクは必ず保持する
+# 出力スキーマ (厳守)
+{{
+  "date": "{today}",
+  "count": {count},
+  "items": [
+    {{
+      "category": "general" | "research" | "vendor",
+      "title": "<元記事のタイトルそのまま>",
+      "url": "<元記事のURLそのまま>",
+      "source": "<出典名>",
+      "region": "jp" | "global",
+      "summary": "<日本語1〜2文の要約>"
+    }}
+  ]
+}}
+
+# 注意
+- 出力は**純粋なJSONのみ**。前置き・後書き・コードブロックフェンスは禁止
+- title / url / source / region / category は news.json の値を改変せずそのまま使う
+- news.json に無い情報を創作しない
+- 各 summary は1〜2文・日本語・150文字以内を目安
+- items の並び順は news.json の順序に従う
 """
+
+
+def _extract_json(text: str) -> str:
+    """LLM応答から最初のJSONオブジェクトを抜き出す (```json フェンス対策)。"""
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence_match:
+        return fence_match.group(1)
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if obj_match:
+        return obj_match.group(0)
+    return text
 
 
 def run_local_summarize(news_json_path: str, summary_path: str) -> bool:
     """
-    ローカル動作確認用: Anthropic APIを直接呼んで要約。
+    ローカル動作確認用: Anthropic APIを直接呼んで要約JSONを生成。
     本番(GitHub Actions)では claude-code-action@v1 がこのステップを担う。
     """
     try:
@@ -62,8 +88,6 @@ def run_local_summarize(news_json_path: str, summary_path: str) -> bool:
         return False
 
     news_json = Path(news_json_path).read_text(encoding="utf-8")
-    import json
-
     news_data = json.loads(news_json)
 
     prompt = SUMMARY_PROMPT_TEMPLATE.format(
@@ -72,23 +96,40 @@ def run_local_summarize(news_json_path: str, summary_path: str) -> bool:
         count=news_data.get("count", 0),
     )
 
-    print("🧠 Anthropic APIで要約を生成中...")
+    print("🧠 Anthropic APIで要約JSONを生成中...")
     client = Anthropic(api_key=api_key)
     message = client.messages.create(
         model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
-    summary_text = "".join(
+    raw_text = "".join(
         block.text for block in message.content if hasattr(block, "text")
     )
 
-    Path(summary_path).write_text(summary_text, encoding="utf-8")
-    print(f"✅ {summary_path} に要約を保存しました")
+    json_str = _extract_json(raw_text)
+    try:
+        summary = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"❌ Claude応答のJSONパースに失敗: {e}", file=sys.stderr)
+        print("--- 応答抜粋 ---", file=sys.stderr)
+        print(raw_text[:500], file=sys.stderr)
+        return False
+
+    if not isinstance(summary.get("items"), list) or not summary["items"]:
+        print("❌ 要約JSONに items がありません", file=sys.stderr)
+        return False
+
+    Path(summary_path).write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"✅ {summary_path} に要約を保存しました ({len(summary['items'])}件)")
     return True
 
 
 def main() -> int:
+    """ローカルで fetch → summarize → Discord投稿 を一気通貫で実行する。"""
     print("=" * 80)
     print("🤖 AI News to Discord (Local Runner)")
     print("=" * 80)
@@ -96,7 +137,7 @@ def main() -> int:
     load_dotenv()
 
     news_path = "news.json"
-    summary_path = "summary.md"
+    summary_path = "summary.json"
 
     # Step 1: ニュース取得
     print("\n[1/3] ニュース取得")
@@ -120,12 +161,12 @@ def main() -> int:
         print(f"❌ {e}", file=sys.stderr)
         return 1
 
-    body = Path(summary_path).read_text(encoding="utf-8").strip()
-    if not body:
+    summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+    if not summary.get("items"):
         print("⚠️  要約が空のため投稿をスキップ")
         return 0
 
-    success = notifier.send_markdown(body)
+    success = notifier.send_summary_json(summary)
     return 0 if success else 1
 
 
